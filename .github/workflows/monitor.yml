@@ -1,0 +1,42 @@
+name: eplus-monitor
+
+on:
+  schedule:
+    - cron: "*/10 * * * *" # 10分おき（GitHub側の都合で数分遅れることがあります）
+  workflow_dispatch: # 手動実行ボタン用
+
+permissions:
+  contents: write # state.json（前回の状態）をリポジトリに保存するため
+
+concurrency:
+  group: eplus-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Check ticket status
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: python monitor.py
+
+      - name: Save state
+        run: |
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "update state"
+            git push
+          fi
