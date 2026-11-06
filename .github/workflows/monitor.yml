@@ -2,8 +2,16 @@ name: eplus-monitor
 
 on:
   schedule:
-    - cron: "*/10 * * * *" # 10分おき（GitHub側の都合で数分遅れることがあります）
+    # GitHub Actionsの時刻はUTC（日本時間 - 9時間）。5分おき。
+    # 日本時間 10:00〜21:25 に動かす = UTC 01:00〜12:25
+    - cron: "*/5 1-11 * * *"   # 日本時間 10:00〜20:55
+    - cron: "0-25/5 12 * * *"  # 日本時間 21:00〜21:25
   workflow_dispatch: # 手動実行ボタン用
+    inputs:
+      send_test:
+        description: "LINEにテスト通知を1通送る"
+        type: boolean
+        default: false
 
 permissions:
   contents: write # state.json（前回の状態）をリポジトリに保存するため
@@ -15,6 +23,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
 
@@ -25,10 +34,19 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      - name: Send LINE test message
+        if: ${{ inputs.send_test }}
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: python monitor.py --test
+
       - name: Check ticket status
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          LOOP_COUNT: "5"          # 1回の実行で5回確認
+          INTERVAL_SECONDS: "60"   # 60秒おき（= 約4分間で5回）
         run: python monitor.py
 
       - name: Save state
