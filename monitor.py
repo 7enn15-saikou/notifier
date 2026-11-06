@@ -13,6 +13,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import requests
@@ -80,18 +81,14 @@ def save_state(state: dict[str, str]) -> None:
     )
 
 
-def main() -> int:
-    if "--test" in sys.argv:
-        send_line("【テスト】イープラス在庫通知の設定は完了しています。")
-        print("テスト通知を送信しました")
-        return 0
-
+def check_once() -> bool:
+    """1回確認する。取得に成功したら True。"""
     res = requests.get(URL, headers=HEADERS, timeout=20)
     res.raise_for_status()
     tickets = parse_tickets(res.text)
     if not tickets:
         print("受付状況を取得できませんでした（ページ構造の変更かアクセス制限の可能性）")
-        return 1
+        return False
 
     prev = load_state()
     restocked = [
@@ -110,7 +107,32 @@ def main() -> int:
 
     # 通知に成功した場合のみ状態を保存（失敗時は次回また通知を試みる）
     save_state(tickets)
-    return 0
+    return True
+
+
+def main() -> int:
+    if "--test" in sys.argv:
+        send_line("【テスト】イープラス在庫通知の設定は完了しています。")
+        print("テスト通知を送信しました")
+        return 0
+
+    # 1回の実行で LOOP_COUNT 回、INTERVAL_SECONDS 秒おきに確認する
+    loop_count = max(1, int(os.environ.get("LOOP_COUNT", "1")))
+    interval = int(os.environ.get("INTERVAL_SECONDS", "60"))
+
+    ok_count = 0
+    for i in range(loop_count):
+        if i > 0:
+            time.sleep(interval)
+        print(f"--- {i + 1}/{loop_count} 回目 ---", flush=True)
+        try:
+            if check_once():
+                ok_count += 1
+        except Exception as e:  # 一時的な失敗で全体を止めない
+            print(f"エラー: {e}", flush=True)
+
+    # 1回も成功しなかった場合だけ、失敗として終了する
+    return 0 if ok_count else 1
 
 
 if __name__ == "__main__":
