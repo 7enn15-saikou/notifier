@@ -2,11 +2,12 @@ name: eplus-monitor
 
 on:
   schedule:
-    # GitHub Actionsの時刻はUTC（日本時間 - 9時間）。5分おき。
-    # 毎時0分・5分ちょうどは混んで遅れやすいので、3分・8分…とずらしている。
-    # 日本時間 10:03〜21:23 に動かす = UTC 01:03〜12:23
-    - cron: "3-58/5 1-11 * * *"  # 日本時間 10:03〜20:58
-    - cron: "3-23/5 12 * * *"    # 日本時間 21:03〜21:23
+    # GitHub Actionsの時刻はUTC（日本時間 - 9時間）。
+    # 30分おきに起動し、1回の実行（約30分）の中で1分おきに確認し続ける。
+    # 毎時0分・5分ちょうどは混んで遅れやすいので、7分・37分にずらしている。
+    # 日本時間 10:07〜21:07 に起動 = UTC 01:07〜12:07
+    - cron: "7,37 1-11 * * *"  # 日本時間 10:07〜20:37
+    - cron: "7 12 * * *"       # 日本時間 21:07
   workflow_dispatch: # 手動実行ボタン用
     inputs:
       send_test:
@@ -17,6 +18,7 @@ on:
 permissions:
   contents: write # state.json（前回の状態）をリポジトリに保存するため
 
+# 前の実行が終わるまで次を待たせる（重ならずに、ほぼ連続して動く）
 concurrency:
   group: eplus-monitor
   cancel-in-progress: false
@@ -24,7 +26,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -46,16 +48,21 @@ jobs:
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-          LOOP_COUNT: "5"          # 1回の実行で5回確認
-          INTERVAL_SECONDS: "60"   # 60秒おき（= 約4分間で5回）
+          LOOP_COUNT: "30"         # 1回の実行で30回確認
+          INTERVAL_SECONDS: "60"   # 60秒おき（= 約30分間）
+          # 自動実行のときだけ、日本時間 21:30 で確認を終える（手動実行は時間帯に関係なく動く）
+          ENFORCE_HOURS: ${{ github.event_name == 'schedule' }}
+          ACTIVE_UNTIL_JST: "21:30"
         run: python monitor.py
 
       - name: Save state
+        if: ${{ always() }}
         run: |
           if [ -n "$(git status --porcelain state.json)" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add state.json
             git commit -m "update state"
+            git pull --rebase
             git push
           fi
