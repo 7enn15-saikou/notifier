@@ -9,6 +9,8 @@
   LOOP_COUNT                 1回の実行での確認回数（既定 1）
   INTERVAL_SECONDS           確認の間隔・秒（既定 60）
   URL_GAP_SECONDS            URLごとの待ち時間・秒（既定 2）
+  ENFORCE_HOURS              "true" のとき、ACTIVE_UNTIL_JST を過ぎたら確認を終了する
+  ACTIVE_UNTIL_JST           確認を終える日本時間の時刻（既定 21:30）
 
 使い方:
   python monitor.py          通常の監視
@@ -19,6 +21,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -152,6 +155,18 @@ def check_once(url: str) -> bool:
     return True
 
 
+JST = timezone(timedelta(hours=9))
+
+
+def past_deadline() -> bool:
+    """定期実行のとき、日本時間の終了時刻を過ぎていたら True。"""
+    if os.environ.get("ENFORCE_HOURS") != "true":
+        return False
+    hh, mm = os.environ.get("ACTIVE_UNTIL_JST", "21:30").split(":")
+    now = datetime.now(JST)
+    return (now.hour, now.minute) >= (int(hh), int(mm))
+
+
 def main() -> int:
     if "--test" in sys.argv:
         send_line("【テスト】イープラス在庫通知の設定は完了しています。")
@@ -165,9 +180,14 @@ def main() -> int:
 
     print(f"監視URL: {len(urls)}件 / 1回の実行で{loop_count}回確認")
     ok_count = 0
+    stopped_by_deadline = False
     for i in range(loop_count):
         if i > 0:
             time.sleep(interval)
+        if past_deadline():
+            print("終了時刻を過ぎたので、確認を終了します")
+            stopped_by_deadline = True
+            break
         print(f"--- {i + 1}/{loop_count} 回目 ---", flush=True)
         for j, url in enumerate(urls):
             if j > 0:
@@ -178,8 +198,8 @@ def main() -> int:
             except Exception as e:  # 1つのURLの失敗で全体を止めない
                 print(f"エラー: {url}: {e}", flush=True)
 
-    # 1回も成功しなかった場合だけ、失敗として終了する
-    return 0 if ok_count else 1
+    # 1回も成功しなかった場合だけ、失敗として終了する（時刻切れによる終了は正常）
+    return 0 if (ok_count or stopped_by_deadline) else 1
 
 
 if __name__ == "__main__":
