@@ -10,12 +10,14 @@
   INTERVAL_SECONDS           確認の間隔・秒（既定 60）
   URL_GAP_SECONDS            URLごとの待ち時間・秒（既定 2）
   ERROR_ALERT_THRESHOLD      取得に連続で何回失敗したらLINEで警告するか（既定 5）
+  END_NOTICE_REMAINING       残り何回になったら「まもなく終了」をLINEで知らせるか（既定 5）
   ENFORCE_HOURS              "true" のとき、ACTIVE_UNTIL_JST を過ぎたら確認を終了する
   ACTIVE_UNTIL_JST           確認を終える日本時間の時刻（既定 21:30）
 
 使い方:
   python monitor.py          通常の監視
   python monitor.py --test   LINEにテスト通知だけ送る
+  python monitor.py --announce 180   「これより3時間、確認を開始します」とLINEに送る
 """
 
 import json
@@ -177,7 +179,33 @@ def notify_safely(text: str) -> None:
         print(f"LINE通知に失敗しました: {e}", flush=True)
 
 
+def format_duration(minutes: int) -> str:
+    """分数を読みやすくする（例: 180 → 3時間、90 → 1時間30分、45 → 45分）。"""
+    h, m = divmod(minutes, 60)
+    if h and m:
+        return f"{h}時間{m}分"
+    if h:
+        return f"{h}時間"
+    return f"{m}分"
+
+
+def build_announcement(minutes: int, now: datetime | None = None) -> str:
+    now = now or datetime.now(JST)
+    end = now + timedelta(minutes=minutes)
+    day = "翌" if end.date() != now.date() else ""
+    return (
+        f"📢 これより{format_duration(minutes)}、チケット販売状況の確認を開始します。\n"
+        f"（1分おきに確認／{day}{end:%H:%M}ごろ終了予定）"
+    )
+
+
 def main() -> int:
+    if "--announce" in sys.argv:
+        minutes = int(sys.argv[sys.argv.index("--announce") + 1])
+        send_line(build_announcement(minutes))
+        print("開始のお知らせをLINEに送信しました")
+        return 0
+
     if "--test" in sys.argv:
         send_line("【テスト】イープラス在庫通知の設定は完了しています。")
         print("テスト通知を送信しました")
@@ -189,6 +217,7 @@ def main() -> int:
     url_gap = int(os.environ.get("URL_GAP_SECONDS", "2"))
 
     print(f"監視URL: {len(urls)}件 / 1回の実行で{loop_count}回確認")
+    end_notice = max(1, int(os.environ.get("END_NOTICE_REMAINING", "5")))
     alert_threshold = max(1, int(os.environ.get("ERROR_ALERT_THRESHOLD", "5")))
     fail_streak: dict[str, int] = {}  # URLごとの「連続で取得に失敗した回数」
     alerted: dict[str, bool] = {}  # 警告を送信済みか
@@ -202,6 +231,11 @@ def main() -> int:
             print("終了時刻を過ぎたので、確認を終了します")
             stopped_by_deadline = True
             break
+        if loop_count > end_notice and i == loop_count - end_notice:
+            notify_safely(
+                f"⏳ まもなく監視を終了します（あと{end_notice}回の確認で終了）。\n"
+                "続けて監視する場合は、もう一度「Run workflow」を押してください。"
+            )
         print(f"--- {i + 1}/{loop_count} 回目 ---", flush=True)
         for j, url in enumerate(urls):
             if j > 0:
