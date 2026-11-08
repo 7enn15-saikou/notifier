@@ -8,8 +8,8 @@ on:
         description: "監視する時間（分）。30〜300の整数。1分おきに確認"
         type: string
         default: "180"
-      send_test:
-        description: "LINEにテスト通知を1通送る"
+      send_start_notice:
+        description: "開始のお知らせをLINEに送る（例：これより3時間、確認を開始します）"
         type: boolean
         default: false
 
@@ -44,12 +44,13 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Send LINE test message
-        if: ${{ inputs.send_test }}
+      - name: Announce start on LINE
+        if: ${{ inputs.send_start_notice }}
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-        run: python monitor.py --test
+          MINUTES: ${{ inputs.loop_minutes || '180' }}
+        run: python monitor.py --announce "$MINUTES"
 
       - name: Check ticket status
         env:
