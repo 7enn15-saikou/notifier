@@ -4,7 +4,9 @@
 
 環境変数:
   LINE_CHANNEL_ACCESS_TOKEN  LINE Messaging API のチャネルアクセストークン（長期）
-  LINE_USER_ID               通知先の自分のユーザーID
+  LINE_USER_ID               通知先の自分のユーザーID（警告・終了予告は自分だけに送る）
+  BROADCAST_NOTICES          "true"（既定）なら、開始のお知らせと「受付中」の通知を
+                             友だち全員に送る。"false" なら自分だけに送る
   EPLUS_URL                  指定すると urls.txt の代わりにこのURLだけを監視
   LOOP_COUNT                 1回の実行での確認回数（既定 1）
   INTERVAL_SECONDS           確認の間隔・秒（既定 60）
@@ -88,19 +90,38 @@ def parse_tickets(html: str) -> dict[str, str]:
     return tickets
 
 
-def send_line(text: str) -> None:
+def _line_post(endpoint: str, payload: dict) -> None:
     token = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
-    user_id = os.environ["LINE_USER_ID"]
     res = requests.post(
-        "https://api.line.me/v2/bot/message/push",
+        f"https://api.line.me/v2/bot/message/{endpoint}",
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },
-        json={"to": user_id, "messages": [{"type": "text", "text": text}]},
+        json=payload,
         timeout=15,
     )
     res.raise_for_status()
+
+
+def send_line(text: str) -> None:
+    """自分（LINE_USER_ID）だけに送る。エラー警告・終了予告などに使う。"""
+    _line_post(
+        "push",
+        {
+            "to": os.environ["LINE_USER_ID"],
+            "messages": [{"type": "text", "text": text}],
+        },
+    )
+
+
+def send_notice(text: str) -> None:
+    """友だち全員に送る（開始のお知らせ・受付中の通知）。
+    BROADCAST_NOTICES=false のときは、自分だけに送る。"""
+    if os.environ.get("BROADCAST_NOTICES", "true").lower() == "true":
+        _line_post("broadcast", {"messages": [{"type": "text", "text": text}]})
+    else:
+        send_line(text)
 
 
 def load_state() -> dict[str, str]:
@@ -143,7 +164,7 @@ def check_once(url: str) -> bool:
 
     if restocked:
         names = "\n".join(f"・{t}" for t in restocked)
-        send_line(
+        send_notice(
             f"🎫 チケットが「{NOTIFY_STATUS}」になりました！\n"
             f"{event}\n{names}\n\n{url}"
         )
@@ -202,7 +223,7 @@ def build_announcement(minutes: int, now: datetime | None = None) -> str:
 def main() -> int:
     if "--announce" in sys.argv:
         minutes = int(sys.argv[sys.argv.index("--announce") + 1])
-        send_line(build_announcement(minutes))
+        send_notice(build_announcement(minutes))
         print("開始のお知らせをLINEに送信しました")
         return 0
 
