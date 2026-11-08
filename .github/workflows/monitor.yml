@@ -1,15 +1,13 @@
 name: eplus-monitor
 
+# 手動実行のみ。Actionsタブ →「eplus-monitor」→「Run workflow」で開始する。
 on:
-  schedule:
-    # GitHub Actionsの時刻はUTC（日本時間 - 9時間）。
-    # 30分おきに起動し、1回の実行（約30分）の中で1分おきに確認し続ける。
-    # 毎時0分・5分ちょうどは混んで遅れやすいので、7分・37分にずらしている。
-    # 日本時間 10:07〜21:07 に起動 = UTC 01:07〜12:07
-    - cron: "7,37 1-11 * * *"  # 日本時間 10:07〜20:37
-    - cron: "7 12 * * *"       # 日本時間 21:07
-  workflow_dispatch: # 手動実行ボタン用
+  workflow_dispatch:
     inputs:
+      loop_minutes:
+        description: "監視する時間（分）。30〜300の整数。1分おきに確認"
+        type: string
+        default: "180"
       send_test:
         description: "LINEにテスト通知を1通送る"
         type: boolean
@@ -18,7 +16,7 @@ on:
 permissions:
   contents: write # state.json（前回の状態）をリポジトリに保存するため
 
-# 前の実行が終わるまで次を待たせる（重ならずに、ほぼ連続して動く）
+# 二重に実行しない（2つ起動した場合、後のものは前のものが終わるまで待つ）
 concurrency:
   group: eplus-monitor
   cancel-in-progress: false
@@ -26,8 +24,17 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 330 # 300分の監視＋準備時間に余裕を持たせた値（GitHubの上限は360分）
     steps:
+      - name: Validate monitoring minutes
+        env:
+          MINUTES: ${{ inputs.loop_minutes || '180' }}
+        run: |
+          if ! [[ "$MINUTES" =~ ^[0-9]+$ ]] || [ "$MINUTES" -lt 30 ] || [ "$MINUTES" -gt 300 ]; then
+            echo "::error::監視時間は30〜300の整数（分）で入力してください（入力された値: $MINUTES）"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -48,11 +55,9 @@ jobs:
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-          LOOP_COUNT: "30"         # 1回の実行で30回確認
-          INTERVAL_SECONDS: "60"   # 60秒おき（= 約30分間）
-          # 自動実行のときだけ、日本時間 21:30 で確認を終える（手動実行は時間帯に関係なく動く）
-          ENFORCE_HOURS: ${{ github.event_name == 'schedule' }}
-          ACTIVE_UNTIL_JST: "21:30"
+          LOOP_COUNT: ${{ inputs.loop_minutes || '180' }}  # 1分おきなので、分数 = 確認回数
+          INTERVAL_SECONDS: "60"
+          ERROR_ALERT_THRESHOLD: "5"  # 取得に5回続けて失敗したらLINEで警告
         run: python monitor.py
 
       - name: Save state
