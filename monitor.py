@@ -9,6 +9,7 @@
   LOOP_COUNT                 1回の実行での確認回数（既定 1）
   INTERVAL_SECONDS           確認の間隔・秒（既定 60）
   URL_GAP_SECONDS            URLごとの待ち時間・秒（既定 2）
+  ERROR_ALERT_THRESHOLD      取得に連続で何回失敗したらLINEで警告するか（既定 5）
   ENFORCE_HOURS              "true" のとき、ACTIVE_UNTIL_JST を過ぎたら確認を終了する
   ACTIVE_UNTIL_JST           確認を終える日本時間の時刻（既定 21:30）
 
@@ -167,6 +168,15 @@ def past_deadline() -> bool:
     return (now.hour, now.minute) >= (int(hh), int(mm))
 
 
+def notify_safely(text: str) -> None:
+    """LINEの送信に失敗しても、監視は止めない。"""
+    try:
+        send_line(text)
+        print("LINEに通知しました")
+    except Exception as e:
+        print(f"LINE通知に失敗しました: {e}", flush=True)
+
+
 def main() -> int:
     if "--test" in sys.argv:
         send_line("【テスト】イープラス在庫通知の設定は完了しています。")
@@ -179,6 +189,10 @@ def main() -> int:
     url_gap = int(os.environ.get("URL_GAP_SECONDS", "2"))
 
     print(f"監視URL: {len(urls)}件 / 1回の実行で{loop_count}回確認")
+    alert_threshold = max(1, int(os.environ.get("ERROR_ALERT_THRESHOLD", "5")))
+    fail_streak: dict[str, int] = {}  # URLごとの「連続で取得に失敗した回数」
+    alerted: dict[str, bool] = {}  # 警告を送信済みか
+
     ok_count = 0
     stopped_by_deadline = False
     for i in range(loop_count):
@@ -193,10 +207,25 @@ def main() -> int:
             if j > 0:
                 time.sleep(url_gap)  # 同時に大量アクセスしない
             try:
-                if check_once(url):
-                    ok_count += 1
+                ok = check_once(url)
             except Exception as e:  # 1つのURLの失敗で全体を止めない
                 print(f"エラー: {url}: {e}", flush=True)
+                ok = False
+
+            if ok:
+                ok_count += 1
+                if alerted.get(url):
+                    notify_safely(f"✅ 受付状況を取得できるようになりました\n{url}")
+                    alerted[url] = False
+                fail_streak[url] = 0
+            else:
+                fail_streak[url] = fail_streak.get(url, 0) + 1
+                if fail_streak[url] >= alert_threshold and not alerted.get(url):
+                    notify_safely(
+                        f"⚠️ 受付状況を{fail_streak[url]}回続けて取得できていません\n"
+                        f"アクセス制限やページ変更の可能性があります。\n{url}"
+                    )
+                    alerted[url] = True  # 復旧するまで、同じ警告は繰り返さない
 
     # 1回も成功しなかった場合だけ、失敗として終了する（時刻切れによる終了は正常）
     return 0 if (ok_count or stopped_by_deadline) else 1
