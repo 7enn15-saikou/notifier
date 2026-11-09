@@ -9,12 +9,16 @@ on:
         type: string
         default: "180"
       send_start_notice:
-        description: "開始のお知らせをLINEに送る（例：これより3時間、確認を開始します）"
+        description: "開始のお知らせをLINEに送る（例：これより180分間、確認を行います）"
         type: boolean
         default: false
 
 permissions:
   contents: write # state.json（前回の状態）をリポジトリに保存するため
+
+# 確認の間隔（秒）。ここを変えれば、確認の間隔を変えられる
+env:
+  INTERVAL_SECONDS: "60"
 
 # 二重に実行しない（2つ起動した場合、後のものは前のものが終わるまで待つ）
 concurrency:
@@ -56,8 +60,7 @@ jobs:
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-          LOOP_COUNT: ${{ inputs.loop_minutes || '180' }}  # 1分おきなので、分数 = 確認回数
-          INTERVAL_SECONDS: "60"
+          DURATION_MINUTES: ${{ inputs.loop_minutes || '180' }}  # 確認の回数は、時間と間隔から自動で計算
           ERROR_ALERT_THRESHOLD: "5"  # 取得に5回続けて失敗したらLINEで警告
         run: python monitor.py
 
