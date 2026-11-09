@@ -8,7 +8,8 @@
   BROADCAST_NOTICES          "true"（既定）なら、開始のお知らせと「受付中」の通知を
                              友だち全員に送る。"false" なら自分だけに送る
   EPLUS_URL                  指定すると urls.txt の代わりにこのURLだけを監視
-  LOOP_COUNT                 1回の実行での確認回数（既定 1）
+  DURATION_MINUTES           監視する時間・分（指定すると確認回数を自動で計算する）
+  LOOP_COUNT                 1回の実行での確認回数（DURATION_MINUTES がないときだけ使う。既定 1）
   INTERVAL_SECONDS           確認の間隔・秒（既定 60）
   URL_GAP_SECONDS            URLごとの待ち時間・秒（既定 2）
   ERROR_ALERT_THRESHOLD      取得に連続で何回失敗したらLINEで警告するか（既定 5）
@@ -19,7 +20,7 @@
 使い方:
   python monitor.py          通常の監視
   python monitor.py --test   LINEにテスト通知だけ送る
-  python monitor.py --announce 180   「これより3時間、確認を開始します」とLINEに送る
+  python monitor.py --announce 180   「これより180分間、確認を行います」とLINEに送る
 """
 
 import json
@@ -200,30 +201,30 @@ def notify_safely(text: str) -> None:
         print(f"LINE通知に失敗しました: {e}", flush=True)
 
 
-def format_duration(minutes: int) -> str:
-    """分数を読みやすくする（例: 180 → 3時間、90 → 1時間30分、45 → 45分）。"""
-    h, m = divmod(minutes, 60)
-    if h and m:
-        return f"{h}時間{m}分"
-    if h:
-        return f"{h}時間"
-    return f"{m}分"
+def format_interval(seconds: int) -> str:
+    """確認の間隔を読みやすくする（例: 60 → 1分おき、50 → 50秒おき）。"""
+    if seconds % 60 == 0:
+        return f"{seconds // 60}分おき"
+    return f"{seconds}秒おき"
 
 
-def build_announcement(minutes: int, now: datetime | None = None) -> str:
+def build_announcement(
+    minutes: int, now: datetime | None = None, interval: int = 60
+) -> str:
     now = now or datetime.now(JST)
     end = now + timedelta(minutes=minutes)
     day = "翌" if end.date() != now.date() else ""
     return (
-        f"📢 これより{format_duration(minutes)}、チケット販売状況の確認を開始します。\n"
-        f"（1分おきに確認／{day}{end:%H:%M}ごろ終了予定）"
+        f"📢 これより{minutes}分間、チケット販売状況の確認を行います。\n"
+        f"（{format_interval(interval)}に確認／{day}{end:%H:%M}ごろ終了予定）"
     )
 
 
 def main() -> int:
     if "--announce" in sys.argv:
         minutes = int(sys.argv[sys.argv.index("--announce") + 1])
-        send_notice(build_announcement(minutes))
+        interval = int(os.environ.get("INTERVAL_SECONDS", "60"))
+        send_notice(build_announcement(minutes, interval=interval))
         print("開始のお知らせをLINEに送信しました")
         return 0
 
@@ -233,9 +234,15 @@ def main() -> int:
         return 0
 
     urls = load_urls()
-    loop_count = max(1, int(os.environ.get("LOOP_COUNT", "1")))
     interval = int(os.environ.get("INTERVAL_SECONDS", "60"))
     url_gap = int(os.environ.get("URL_GAP_SECONDS", "2"))
+    if os.environ.get("DURATION_MINUTES"):
+        # 監視する時間（分）から、確認の回数を求める（例: 180分・50秒おき → 216回）
+        loop_count = max(
+            1, int(float(os.environ["DURATION_MINUTES"]) * 60 // max(interval, 1))
+        )
+    else:
+        loop_count = max(1, int(os.environ.get("LOOP_COUNT", "1")))
 
     print(f"監視URL: {len(urls)}件 / 1回の実行で{loop_count}回確認")
     end_notice = max(1, int(os.environ.get("END_NOTICE_REMAINING", "5")))
@@ -245,9 +252,13 @@ def main() -> int:
 
     ok_count = 0
     stopped_by_deadline = False
+    start = time.monotonic()
     for i in range(loop_count):
         if i > 0:
-            time.sleep(interval)
+            # 通信にかかった時間を差し引いて、interval秒ごとの間隔を保つ（ずれを溜めない）
+            wait = start + i * interval - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
         if past_deadline():
             print("終了時刻を過ぎたので、確認を終了します")
             stopped_by_deadline = True
