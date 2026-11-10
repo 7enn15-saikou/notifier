@@ -237,8 +237,8 @@ def main() -> int:
             break
         if loop_count > end_notice and i == loop_count - end_notice:
             notify_safely(
-                f"⏳ まもなく監視を終了します（あと{end_notice}回の確認で終了）。\n"
-                "続けて監視する場合は、もう一度「Run workflow」を押してください。"
+                f"⏳ まもなく確認を終了します（あと{end_notice}回の確認で終了）。\n"
+                "続けて確認する場合は、もう一度「Run workflow」を押してください。"
             )
         print(f"--- {i + 1}/{loop_count} 回目 ---", flush=True)
         for j, url in enumerate(urls):
