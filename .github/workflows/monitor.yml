@@ -9,7 +9,7 @@ on:
         type: string
         default: "180"
       send_start_notice:
-        description: "開始のお知らせをLINEに送る（例：これより180分間、確認を行います）"
+        description: "開始のお知らせをDiscordに送る（例：これより180分間、確認を行います）"
         type: boolean
         default: false
 
@@ -17,8 +17,10 @@ permissions:
   contents: write # state.json（前回の状態）をリポジトリに保存するため
 
 # 確認の間隔（秒）。ここを変えれば、確認の間隔を変えられる
+# DISCORD_WEBHOOK_URL は、GitHubのSecretsに登録したDiscordのウェブフックURL
 env:
   INTERVAL_SECONDS: "60"
+  DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
 # 二重に実行しない（2つ起動した場合、後のものは前のものが終わるまで待つ）
 concurrency:
@@ -39,6 +41,13 @@ jobs:
             exit 1
           fi
 
+      - name: Check Discord webhook is set
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "::error::Secretsに DISCORD_WEBHOOK_URL が登録されていません。通知が送れないので、監視を始めません。"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -48,20 +57,16 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Announce start on LINE
+      - name: Announce start on Discord
         if: ${{ inputs.send_start_notice }}
         env:
-          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           MINUTES: ${{ inputs.loop_minutes || '180' }}
         run: python monitor.py --announce "$MINUTES"
 
       - name: Check ticket status
         env:
-          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           DURATION_MINUTES: ${{ inputs.loop_minutes || '180' }}  # 確認の回数は、時間と間隔から自動で計算
-          ERROR_ALERT_THRESHOLD: "5"  # 取得に5回続けて失敗したらLINEで警告
+          ERROR_ALERT_THRESHOLD: "5"  # 取得に5回続けて失敗したらDiscordで警告
         run: python monitor.py
 
       - name: Save state
