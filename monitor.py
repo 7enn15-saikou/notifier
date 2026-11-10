@@ -1,26 +1,23 @@
-"""イープラスの公演ページを監視し、「受付中」になったらLINEに通知する。
+"""イープラスの公演ページを監視し、「受付中」になったらDiscordに通知する。
 
 監視するURLは urls.txt に1行ずつ書く（空行と # で始まる行は無視）。
 
 環境変数:
-  LINE_CHANNEL_ACCESS_TOKEN  LINE Messaging API のチャネルアクセストークン（長期）
-  LINE_USER_ID               通知先の自分のユーザーID（警告・終了予告は自分だけに送る）
-  BROADCAST_NOTICES          "true"（既定）なら、開始のお知らせと「受付中」の通知を
-                             友だち全員に送る。"false" なら自分だけに送る
+  DISCORD_WEBHOOK_URL        通知を送るDiscordチャンネルのウェブフックURL（必須）
   EPLUS_URL                  指定すると urls.txt の代わりにこのURLだけを監視
   DURATION_MINUTES           監視する時間・分（指定すると確認回数を自動で計算する）
   LOOP_COUNT                 1回の実行での確認回数（DURATION_MINUTES がないときだけ使う。既定 1）
   INTERVAL_SECONDS           確認の間隔・秒（既定 60）
   URL_GAP_SECONDS            URLごとの待ち時間・秒（既定 2）
-  ERROR_ALERT_THRESHOLD      取得に連続で何回失敗したらLINEで警告するか（既定 5）
-  END_NOTICE_REMAINING       残り何回になったら「まもなく終了」をLINEで知らせるか（既定 5）
+  ERROR_ALERT_THRESHOLD      取得に連続で何回失敗したらDiscordで警告するか（既定 5）
+  END_NOTICE_REMAINING       残り何回になったら「まもなく終了」をDiscordで知らせるか（既定 5）
   ENFORCE_HOURS              "true" のとき、ACTIVE_UNTIL_JST を過ぎたら確認を終了する
   ACTIVE_UNTIL_JST           確認を終える日本時間の時刻（既定 21:30）
 
 使い方:
   python monitor.py          通常の監視
-  python monitor.py --test   LINEにテスト通知だけ送る
-  python monitor.py --announce 180   「これより180分間、確認を行います」とLINEに送る
+  python monitor.py --test   Discordにテスト通知だけ送る
+  python monitor.py --announce 180   「これより180分間、確認を行います」とDiscordに送る
 """
 
 import json
@@ -91,38 +88,13 @@ def parse_tickets(html: str) -> dict[str, str]:
     return tickets
 
 
-def _line_post(endpoint: str, payload: dict) -> None:
-    token = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
-    res = requests.post(
-        f"https://api.line.me/v2/bot/message/{endpoint}",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=15,
-    )
+def send_discord(text: str) -> None:
+    """DiscordのウェブフックURLにメッセージを送る（すべての通知で共通）。"""
+    webhook = os.environ.get("DISCORD_WEBHOOK_URL")
+    if not webhook:
+        raise RuntimeError("DISCORD_WEBHOOK_URL が設定されていません")
+    res = requests.post(webhook, json={"content": text}, timeout=15)
     res.raise_for_status()
-
-
-def send_line(text: str) -> None:
-    """自分（LINE_USER_ID）だけに送る。エラー警告・終了予告などに使う。"""
-    _line_post(
-        "push",
-        {
-            "to": os.environ["LINE_USER_ID"],
-            "messages": [{"type": "text", "text": text}],
-        },
-    )
-
-
-def send_notice(text: str) -> None:
-    """友だち全員に送る（開始のお知らせ・受付中の通知）。
-    BROADCAST_NOTICES=false のときは、自分だけに送る。"""
-    if os.environ.get("BROADCAST_NOTICES", "true").lower() == "true":
-        _line_post("broadcast", {"messages": [{"type": "text", "text": text}]})
-    else:
-        send_line(text)
 
 
 def load_state() -> dict[str, str]:
@@ -165,11 +137,11 @@ def check_once(url: str) -> bool:
 
     if restocked:
         names = "\n".join(f"・{t}" for t in restocked)
-        send_notice(
+        send_discord(
             f"🎫 チケットが「{NOTIFY_STATUS}」になりました！\n"
             f"{event}\n{names}\n\n{url}"
         )
-        print("LINEに通知しました")
+        print("Discordに通知しました")
 
     # 通知に成功した場合のみ状態を保存（失敗時は次回また通知を試みる）
     prefix = f"{url}\t"
@@ -193,12 +165,12 @@ def past_deadline() -> bool:
 
 
 def notify_safely(text: str) -> None:
-    """LINEの送信に失敗しても、監視は止めない。"""
+    """Discordへの送信に失敗しても、監視は止めない。"""
     try:
-        send_line(text)
-        print("LINEに通知しました")
+        send_discord(text)
+        print("通知しました")
     except Exception as e:
-        print(f"LINE通知に失敗しました: {e}", flush=True)
+        print(f"通知に失敗しました: {e}", flush=True)
 
 
 def format_interval(seconds: int) -> str:
@@ -224,12 +196,12 @@ def main() -> int:
     if "--announce" in sys.argv:
         minutes = int(sys.argv[sys.argv.index("--announce") + 1])
         interval = int(os.environ.get("INTERVAL_SECONDS", "60"))
-        send_notice(build_announcement(minutes, interval=interval))
-        print("開始のお知らせをLINEに送信しました")
+        send_discord(build_announcement(minutes, interval=interval))
+        print("開始のお知らせをDiscordに送信しました")
         return 0
 
     if "--test" in sys.argv:
-        send_line("【テスト】イープラス在庫通知の設定は完了しています。")
+        send_discord("【テスト】イープラス在庫通知の設定は完了しています。")
         print("テスト通知を送信しました")
         return 0
 
