@@ -69,6 +69,15 @@ jobs:
           ERROR_ALERT_THRESHOLD: "5"  # 取得に5回続けて失敗したらDiscordで警告
         run: python monitor.py
 
+      # 「Cancel workflow」で途中で止めたときに、Discordへ知らせる
+      - name: Notify cancelled
+        if: ${{ cancelled() }}
+        run: |
+          NOW=$(TZ=Asia/Tokyo date '+%H:%M')
+          curl -sS -X POST -H "Content-Type: application/json" \
+            -d "{\"content\":\"🛑 実行が途中で中止されました（${NOW}）。\\n再開する場合は、もう一度「Run workflow」を押してください。\"}" \
+            "$DISCORD_WEBHOOK_URL"
+
       - name: Save state
         if: ${{ always() }}
         run: |
