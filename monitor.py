@@ -6,6 +6,9 @@
   DISCORD_WEBHOOK_URL        通知を送るDiscordチャンネルのウェブフックURL（必須）
   EPLUS_URL                  指定すると urls.txt の代わりにこのURLだけを監視
   DURATION_MINUTES           監視する時間・分（指定すると確認回数を自動で計算する）
+  JOB_START_EPOCH            （GitHub上で自動設定）実行の開始時刻。あれば、準備にかかった時間を
+                             差し引き、実行全体が DURATION_MINUTES に収まるようにする
+  FINISH_RESERVE_SECONDS     終了時に確保する余裕・秒（既定 60。JOB_START_EPOCH があるときだけ使う）
   LOOP_COUNT                 1回の実行での確認回数（DURATION_MINUTES がないときだけ使う。既定 1）
   INTERVAL_SECONDS           確認の間隔・秒（既定 60）
   URL_GAP_SECONDS            URLごとの待ち時間・秒（既定 2）
@@ -22,6 +25,7 @@
 
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -69,12 +73,36 @@ def parse_event_name(html: str) -> str:
     return "(公演名不明)"
 
 
-def parse_tickets(html: str) -> dict[str, str]:
-    """ページ内の「受付期間」の直前を券種名、直後を受付状況として取り出す。"""
+DATE_RE = re.compile(r"(\d{4})\s*/\s*(\d{1,2})\s*/\s*(\d{1,2})\s*\(([^)]*)\)")
+START_RE = re.compile(r"開演\s*[:：]?\s*(\d{1,2}:\d{2})")
+
+
+def find_performance(lines: list[str], i: int) -> str | None:
+    """lines[i] が公演の見出し（日付＋開演時刻）なら「11/15(日) 17:30」の形で返す。"""
+    m = DATE_RE.match(lines[i])
+    if not m:
+        return None
+    start = START_RE.search(" ".join(lines[i : i + 3]))
+    if not start:
+        return None  # 開演時刻が読めない行は、公演の見出しとして扱わない
+    return f"{int(m.group(2))}/{int(m.group(3))}({m.group(4)}) {start.group(1)}"
+
+
+def parse_ticket_details(html: str) -> dict[str, tuple[str, str | None]]:
+    """券種名 → (受付状況, 公演日時) を取り出す。
+
+    「受付期間」の直前を券種名、直後を受付状況とし、その券種より前で一番近い
+    公演の見出し（例: 2026/11/15(日) 開演：17:30～）を、その券種の公演日時とする。
+    """
     soup = BeautifulSoup(html, "html.parser")
     lines = [ln.strip() for ln in soup.get_text("\n").splitlines() if ln.strip()]
-    tickets: dict[str, str] = {}
+    details: dict[str, tuple[str, str | None]] = {}
+    performance: str | None = None
     for i, line in enumerate(lines):
+        found = find_performance(lines, i)
+        if found:
+            performance = found
+            continue
         if not line.startswith("受付期間"):
             continue
         title = lines[i - 1] if i > 0 else "(券種不明)"
@@ -82,10 +110,15 @@ def parse_tickets(html: str) -> dict[str, str]:
         if status is None:
             continue
         key, n = title, 2
-        while key in tickets:  # 同名の券種がある場合の衝突回避
+        while key in details:  # 同名の券種がある場合の衝突回避
             key, n = f"{title} #{n}", n + 1
-        tickets[key] = status
-    return tickets
+        details[key] = (status, performance)
+    return details
+
+
+def parse_tickets(html: str) -> dict[str, str]:
+    """券種名 → 受付状況。"""
+    return {k: status for k, (status, _) in parse_ticket_details(html).items()}
 
 
 def send_discord(text: str) -> None:
@@ -113,11 +146,31 @@ def state_key(url: str, title: str) -> str:
     return f"{url}\t{title}"
 
 
+def format_restocked(
+    restocked: list[str], details: dict[str, tuple[str, str | None]]
+) -> str:
+    """復活した券種を、公演日時ごとにまとめた文にする。
+    例:
+      11/15(日) 17:30
+      ・先着当日引換券受付"""
+    groups: dict[str | None, list[str]] = {}
+    for title in restocked:
+        groups.setdefault(details[title][1], []).append(title)
+    blocks = []
+    for performance, titles in groups.items():
+        lines = [performance] if performance else []
+        # 同名の券種を区別するための内部の印（" #2"）は、通知には出さない
+        lines += [f"・{re.sub(r' #\d+$', '', t)}" for t in titles]
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
+
+
 def check_once(url: str) -> bool:
     """1つのURLを1回確認する。取得に成功したら True。"""
     res = requests.get(url, headers=HEADERS, timeout=20)
     res.raise_for_status()
-    tickets = parse_tickets(res.text)
+    details = parse_ticket_details(res.text)
+    tickets = {k: status for k, (status, _) in details.items()}
     if not tickets:
         print(f"受付状況を取得できませんでした（ページ構造の変更かアクセス制限の可能性）: {url}")
         return False
@@ -132,14 +185,13 @@ def check_once(url: str) -> bool:
     ]
 
     print(f"[{event}]")
-    for title, status in tickets.items():
-        print(f"  {status}: {title}")
+    for title, (status, performance) in details.items():
+        print(f"  {status}: {title}  ({performance or '公演日時 不明'})")
 
     if restocked:
-        names = "\n".join(f"・{t}" for t in restocked)
         send_discord(
             f"🎫 チケットが「{NOTIFY_STATUS}」になりました！\n"
-            f"{event}\n{names}\n\n{url}"
+            f"{event}\n{format_restocked(restocked, details)}\n\n{url}"
         )
         print("Discordに通知しました")
 
@@ -209,10 +261,15 @@ def main() -> int:
     interval = int(os.environ.get("INTERVAL_SECONDS", "60"))
     url_gap = int(os.environ.get("URL_GAP_SECONDS", "2"))
     if os.environ.get("DURATION_MINUTES"):
-        # 監視する時間（分）から、確認の回数を求める（例: 180分・50秒おき → 216回）
-        loop_count = max(
-            1, int(float(os.environ["DURATION_MINUTES"]) * 60 // max(interval, 1))
-        )
+        # 監視する時間（分）から、確認の回数を求める。
+        budget = float(os.environ["DURATION_MINUTES"]) * 60
+        job_start = os.environ.get("JOB_START_EPOCH")
+        if job_start:
+            # GitHub上では、実行全体（準備＋監視＋保存）が指定した時間に収まるよう、
+            # すでに準備にかかった時間と、最後の保存用の余裕を差し引く
+            budget -= max(0.0, time.time() - float(job_start))
+            budget -= int(os.environ.get("FINISH_RESERVE_SECONDS", "60"))
+        loop_count = max(1, int(budget // max(interval, 1)))
     else:
         loop_count = max(1, int(os.environ.get("LOOP_COUNT", "1")))
 
