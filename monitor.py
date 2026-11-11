@@ -6,9 +6,6 @@
   DISCORD_WEBHOOK_URL        通知を送るDiscordチャンネルのウェブフックURL（必須）
   EPLUS_URL                  指定すると urls.txt の代わりにこのURLだけを監視
   DURATION_MINUTES           監視する時間・分（指定すると確認回数を自動で計算する）
-  JOB_START_EPOCH            （GitHub上で自動設定）実行の開始時刻。あれば、準備にかかった時間を
-                             差し引き、実行全体が DURATION_MINUTES に収まるようにする
-  FINISH_RESERVE_SECONDS     終了時に確保する余裕・秒（既定 60。JOB_START_EPOCH があるときだけ使う）
   LOOP_COUNT                 1回の実行での確認回数（DURATION_MINUTES がないときだけ使う。既定 1）
   INTERVAL_SECONDS           確認の間隔・秒（既定 60）
   URL_GAP_SECONDS            URLごとの待ち時間・秒（既定 2）
@@ -262,14 +259,10 @@ def main() -> int:
     url_gap = int(os.environ.get("URL_GAP_SECONDS", "2"))
     if os.environ.get("DURATION_MINUTES"):
         # 監視する時間（分）から、確認の回数を求める。
-        budget = float(os.environ["DURATION_MINUTES"]) * 60
-        job_start = os.environ.get("JOB_START_EPOCH")
-        if job_start:
-            # GitHub上では、実行全体（準備＋監視＋保存）が指定した時間に収まるよう、
-            # すでに準備にかかった時間と、最後の保存用の余裕を差し引く
-            budget -= max(0.0, time.time() - float(job_start))
-            budget -= int(os.environ.get("FINISH_RESERVE_SECONDS", "60"))
-        loop_count = max(1, int(budget // max(interval, 1)))
+        # 例: 300分・60秒おき → 300回
+        loop_count = max(
+            1, int(float(os.environ["DURATION_MINUTES"]) * 60 // max(interval, 1))
+        )
     else:
         loop_count = max(1, int(os.environ.get("LOOP_COUNT", "1")))
 
