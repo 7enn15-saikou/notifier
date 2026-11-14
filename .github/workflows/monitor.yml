@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       loop_minutes:
-        description: "監視する時間（分）。30〜300の整数。30秒おきに確認"
+        description: "監視する時間（分）。30〜300の整数。10秒おきに確認"
         type: string
         default: "180"
       send_start_notice:
@@ -19,7 +19,7 @@ permissions:
 # 確認の間隔（秒）。ここを変えれば、確認の間隔を変えられる
 # DISCORD_WEBHOOK_URL は、GitHubのSecretsに登録したDiscordのウェブフックURL
 env:
-  INTERVAL_SECONDS: "30"
+  INTERVAL_SECONDS: "10"
   DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
 # 二重に実行しない（2つ起動した場合、後のものは前のものが終わるまで待つ）
